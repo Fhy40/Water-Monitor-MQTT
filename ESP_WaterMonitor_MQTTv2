@@ -1,0 +1,160 @@
+#include <EEPROM.h>
+#include <ESP8266WiFi.h>
+#include <PubSubClient.h>
+#include <Wire.h>
+#include <Adafruit_INA219.h>
+
+#define trigPin 5
+#define echoPin 4
+const char* waterlevel_topic = "topic_address";
+
+//Setting up Variables
+// Water Tank parameters , highest and lowest point of water in the tank:
+int lowest_point = 200;
+int highest_point = 73; 
+
+long duration;
+int distance;
+
+// Connect to the WiFi
+const char* ssid = "SSID";
+const char* password = "password";
+const char* mqtt_server = "MQTT_SERVER_ADDRESS";
+
+WiFiClient espClient;
+PubSubClient client(espClient);
+long lastMsg = 0; 
+
+void callback(char* topic, byte* payload, unsigned int length) {
+ Serial.print("Message arrived [");
+ Serial.print(topic);
+ Serial.print("] "); //Prints out the topic
+
+ //Cycles through the payload and prints out what it recieves
+ for (int i=0;i<length;i++) {
+  char receivedChar = (char)payload[i];
+  Serial.print(receivedChar);
+   }
+ Serial.println();
+ Serial.println("Now we print it with characters: ");
+ 
+ //This handles changing lowest point to the new value over MQTT
+ //Prints out the new lowest point
+ Serial.println("lowest_point: ");
+ String low_point_store = "";
+ for (int i=0;i<3;i++) {
+  Serial.print(char(payload[i]));
+  low_point_store += char(payload[i]);
+ }
+ Serial.println();
+ Serial.println("This is low_point_store: " + low_point_store);
+ Serial.println("Old lowest_point: " + String(lowest_point));
+ lowest_point = low_point_store.toInt(); 
+ Serial.println("New lowest_point: " + String(lowest_point));
+ Serial.println();
+ 
+ //This handles changing highest point to the new value over MQTT
+ Serial.println("highest_point: ");
+ String high_point_store = ""; 
+ for (int i=3;i<5;i++) {
+  Serial.print(char(payload[i]));
+  high_point_store += char(payload[i]);
+ }
+ Serial.println();
+ Serial.println("This is high_point_store: " + high_point_store);
+ Serial.println("Old highest_point: " + String(highest_point));
+ highest_point = high_point_store.toInt(); 
+ Serial.println("New highest_point: " + String(highest_point));
+ 
+}
+
+int get_distance() {
+  digitalWrite(trigPin, LOW);
+  delayMicroseconds(2);
+  // Sets the trigPin on HIGH state for 10 micro seconds
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
+  // Reads the echoPin, returns the sound wave travel time in microseconds
+  duration = pulseIn(echoPin, HIGH);
+  
+  // Calculating the distance - provided by original coder = to convert raw data to cm
+  distance = duration*0.034/2;
+  Serial.println(distance);
+  return distance;
+  // Prints the distance on the Serial Monitor
+}
+
+int get_percentage() {
+  float percentage_constant = 100.0/(lowest_point - highest_point);
+  Serial.println(percentage_constant);
+  int distance2 = get_distance();
+  Serial.println(distance2);
+  int loss_percentage = (distance2 - highest_point) * percentage_constant;
+  int  current_percentage = 100 - loss_percentage;
+  
+  return current_percentage;
+}
+
+
+void reconnect() {
+ // Loop until we're reconnected
+ while (!client.connected()) {
+ Serial.print("Attempting MQTT connection...");
+ // Attempt to connect
+ if (client.connect("ESP8266 Client")) {
+  Serial.println("connected");
+  // ... and subscribe to topic (This is the topic you need to publish to to change the parameters)
+  client.subscribe("paho/test/WaterLevel_Parameter");
+ } else {
+  Serial.print("failed, rc=");
+  Serial.print(client.state());
+  Serial.println(" try again in 5 seconds");
+  // Wait 5 seconds before retrying
+  delay(5000);
+  }
+ }
+}
+//Publishes the current_percentage to the MQTT Topic specified in the beggining every 30 seconds
+//Also prints it out to Serial for debug reasons
+void publish_percentage() {
+   
+  //pub every 30 seconds
+  long now = millis();
+  if (now - lastMsg > 30000) {
+    String measure = String(get_percentage());
+    lastMsg = now;
+    client.publish(waterlevel_topic, measure.c_str());
+    Serial.println(measure);
+  }
+}
+//Connects to WiFi and the MQTT Broker
+//Prints out some info on the WiFi network you've connected to
+void setup() {
+  // put your setup code here, to run once:
+  Serial.begin(115200);
+
+  WiFi.begin(ssid, password);
+  WiFi.mode(WIFI_STA);
+ 
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println("");
+  Serial.println("WiFi connected");  
+  Serial.println("IP address: ");
+  Serial.println(WiFi.localIP());
+ 
+ client.setServer(mqtt_server, 1883);
+ client.setCallback(callback);
+}
+#Just maintains the connection to the broker
+void loop() {
+  if (!client.connected()) {
+  reconnect();
+ }
+ publish_percentage();
+ client.loop();
+}
